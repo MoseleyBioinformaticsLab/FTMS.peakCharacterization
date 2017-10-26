@@ -1,0 +1,140 @@
+# Prototyping Noise Detection
+
+```{r setup}
+library(SIRM.FTMS.peakCharacterization)
+library(dplyr)
+library(cowplot)
+```
+
+
+```{r load_data}
+zip_data <- zip_ms("test_files/zip_files_X2017.09.14.10.19.30/bcal_good_UK001N1exoposb.zip", load_raw = TRUE, load_peak_list = FALSE)
+load(file.path(zip_data$temp_directory, "peak_finder.rds"))
+zip_data$cleanup()
+```
+
+```{r single_scan}
+scan_peaks <- peak_finder$multi_scan_peaklist$peak_list_by_scans[[1]]$peak_list
+scan_peaks$log_height <- log10(scan_peaks$Height)
+
+# confirm we have what we want
+ggplot(scan_peaks, aes(x = log_height)) + geom_histogram(bins = 100)
+```
+
+The idea behind this noise detection is to use the density of the Log 10 transformed
+height to find the first mode, then take the left hand side of the data to
+estimate the standard deviation based on one side of the distribution.
+
+```{r density_values}
+use_data <- scan_peaks$log_height
+density_data <- density(use_data)
+
+peak_locs <- pracma::findpeaks(density_data$y, nups = 4)
+
+first_loc <- data.frame(x = density_data$x[peak_locs[1, 2]])
+
+ggplot(scan_peaks, aes(x = log_height)) + geom_histogram(bins = 100) + geom_vline(data = first_loc, aes(xintercept = x), color = "red", size = 1.1)
+```
+
+```{r left_side}
+left_side_values <- use_data[use_data <= first_loc$x]
+
+diffs <- (left_side_values - first_loc$x)^2
+sum_diffs <- sum(diffs)
+n <- length(left_side_values)
+
+sd <- sqrt(sum_diffs / (n - 1))
+
+sd_range <- data.frame(x = c(first_loc$x - (3 * sd),
+                         first_loc$x,
+                         first_loc$x + (3 * sd),
+                         log10(peak_finder$multi_scan_peaklist$noise_info[1,"threshold"])),
+                       type = c("min", "middle", "max", "old"))
+
+ggplot(scan_peaks, aes(x = log_height)) + geom_histogram(bins = 100) + 
+  geom_vline(data = sd_range, aes(xintercept = x, color = type), size = 1.1)
+```
+
+Sweet! This looks awesome. How many more peaks do we pick up?
+
+```{r peak_diffs}
+sum(scan_peaks$not_noise)
+sum(scan_peaks$log_height > sd_range[3, "x"])
+```
+
+So we get 60 more peaks, just in this one scan.
+
+Lets make this thing a function we can add to the package.
+
+```{r}
+noise_detector <- function(peaklist, intensity_measure = "Height", transform = log10){
+  assertthat::assert_that(class(peaklist) == "data.frame")
+
+  intensities <- transform(peaklist[[intensity_measure]])
+  intensities_nona <- intensities[!is.na(intensities)]
+  
+  density_data <- density(intensities_nona)
+  
+  density_peaks <- pracma::findpeaks(density_data$y, nups = 4)
+  
+  mean_loc <- density_data$x[density_peaks[1, 2]]
+  
+  left_side_values <- intensities_nona[intensities_nona <= mean_loc]
+  peak_diffs <- sum((left_side_values - mean_loc)^2)
+  
+  sd_value <- sqrt(peak_diffs / (length(left_side_values) - 1))
+  
+  max_noise <- mean_loc + (3 * sd_value)
+  
+  peaklist$not_noise <- intensities > max_noise
+  
+  # don't know the transform function directly, so we test for log10 and log2,
+  # and if it doesn't match either of those, then we get the cutoff directly
+  # from the values themselves
+  if (transform(10) == 1) {
+    non_transform_cutoff <- 10^max_noise
+  } else if (transform(2) == 1) {
+    non_transform_cutoff <- 2^max_noise
+  } else {
+    non_transform_cutoff <- max(peaklist[[intensity_measure]][!peaklist$not_noise])
+  }
+  
+  mean_noise <- mean_loc
+  
+  if (sum(peaklist[["not_noise"]] > 0)) {
+    mean_signal <- mean(transform(peaklist[[intensity_measure]][peaklist$not_noise]), na.rm = TRUE)
+    sum_signal <- sum(transform(peaklist[[intensity_measure]][peaklist$not_noise]) - mean_noise, na.rm = TRUE)
+    n_signal <- sum(peaklist$not_noise)
+    n_noise <- sum(!peaklist$not_noise)
+    signal_noise_ratio <- mean_signal - mean_noise
+  } else {
+    mean_signal <- 0
+    sum_signal <- 0
+    n_signal <- 0
+    n_noise <- sum(!peaklist$not_noise)
+    signal_noise_ratio <- -1 * mean_noise
+  }
+  
+  return(list(peak_list = peaklist,
+              noise_info = data.frame(noise = mean_noise,
+                                      signal = mean_signal,
+                                      sum_signal = sum_signal,
+                                      n_signal = n_signal,
+                                      n_noise = n_noise,
+                                      sn_ratio = signal_noise_ratio,
+                                      intensity_measure = intensity_measure,
+                                      threshold = non_transform_cutoff)))
+  
+}
+```
+
+```{r}
+test_peaks <- scan_peaks
+test_peaks$log_height <- NULL
+test_peaks$not_noise <- NULL
+test_noise <- noise_detector(scan_peaks)
+test_noise$noise_info
+
+peak_finder$multi_scan_peaklist$noise_info[1,]
+```
+
