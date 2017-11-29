@@ -423,3 +423,28 @@ seeing. Take the scan level set of peaks, and just munge them together, both
 non-normalized and normalized, and see if those distributions look like what
 we are seeing from the averaged case.
 
+```{r alternative_normalization}
+peak_lists <- purrr::map(zip_processed$peak_finder$multi_scan_peaklist$peak_list_by_scans, "peak_list")
+
+peak_lists <- peak_lists[scan_indices]
+
+raw_lists <- purrr::map_df(peak_lists, function(x){x})
+
+norm_lists <- purrr::map_df(seq(1, length(peak_lists)), function(x){
+  tmp_list <- peak_lists[[x]]
+  tmp_list$Height <- exp(log(tmp_list$Height) - normalization_factors[x])
+  tmp_list
+})
+
+
+```
+
+```{r}
+raw_lists$type <- "raw"
+norm_lists$type <- "normalized"
+
+all_lists <- rbind(raw_lists, norm_lists)
+
+ggplot(all_lists, aes(x = log10(Height))) + geom_histogram(bins = 200) + facet_wrap(~ type, nrow = 2)
+```
+
