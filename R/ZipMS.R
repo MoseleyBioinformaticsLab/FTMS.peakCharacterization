@@ -43,9 +43,8 @@ raw_metadata_mzml <- function(mzml_files, raw_file_loc, recursive = TRUE){
     raw_meta <- waitcopy::import_json(json_mzml_match[in_row, "json_file"])
     #print(json_mzml_match[in_row, "mzml_file"])
     mzml_meta <- try(get_mzml_metadata(json_mzml_match[in_row, "mzml_file"]))
-
-    source_file_data <- mzml_meta$fileDescription$sourceFileList$sourceFile
-    if (class(mzml_meta) != "try-error") {
+    if (!inherits(mzml_meta, "try-error")) {
+      source_file_data <- mzml_meta$fileDescription$sourceFileList$sourceFile
       tmp_model <- as.character(mzml_meta$referenceableParamGroupList$referenceableParamGroup[[1]]$name)
       tmp_serial <- as.character(mzml_meta$referenceableParamGroupList$referenceableParamGroup[[2]]$value)
       tmp_sha1 <- as.character(mzml_meta$fileDescription$sourceFileList$sourceFile[[3]]$value)
