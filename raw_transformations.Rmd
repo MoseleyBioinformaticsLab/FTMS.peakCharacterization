@@ -193,9 +193,9 @@ ggplot(test_2, aes(x = mz, y = intensity, color = type)) + geom_point() + geom_l
 ## New Functions
 
 So now we need a new function that can actually do the normalization on the raw
-data, and a function that averages the scans properly.
+data, and a function that sums the scans properly.
 
-### Average Scans
+### Sum Scans
 
 So lets take the code we created above, and actually make a function that we
 can use out of it.
@@ -219,7 +219,7 @@ extract_scans_list <- function(raw_data, mz_range = NULL, scan_range = NULL){
   list(mz = unique_mz, scans = scans)
 }
 
-average_scans_list <- function(scans_list){
+sum_scans_list <- function(scans_list){
   
   scans <- scans_list$scans
   unique_mz <- scans_list$mz
@@ -232,7 +232,7 @@ average_scans_list <- function(scans_list){
                                         xout = unique_mz)$y
   }
   
-  data.frame(mz = unique_mz, intensity = rowMeans(intensity_matrix))
+  data.frame(mz = unique_mz, intensity = rowSums(intensity_matrix, na.rm = TRUE))
   
 }
 ```
@@ -283,7 +283,7 @@ raw_scans <- extract_scans_list(raw_data, scan_range = scan_range)
 # need to make the set of scans that get averaged the same
 raw_scans$scans <- raw_scans$scans[scan_indices]
 
-raw_average <- average_scans_list(raw_scans)
+raw_sum <- sum_scans_list(raw_scans)
 ```
 
 ```{r average_normalized_data}
@@ -291,19 +291,19 @@ norm_scans <- extract_scans_list(raw_data, scan_range = scan_range)
 
 norm_scans <- normalize_scans_list(norm_scans, normalization_factors, scan_indices)
 
-norm_average <- average_scans_list(norm_scans)
+norm_sum <- sum_scans_list(norm_scans)
 ```
 
 ## Compare Peaks & Distributions
 
 ```{r raw_peaks}
-raw_average <- filter(raw_average, !is.na(intensity))
-raw_peaks <- SIRM.FTMS.peakCharacterization:::generate_peaks(raw_average, n_peak = Inf)
+raw_sum <- filter(raw_sum, !is.na(intensity))
+raw_peaks <- SIRM.FTMS.peakCharacterization:::generate_peaks(raw_sum, n_peak = Inf)
 ```
 
 ```{r norm_peaks}
-norm_average <- filter(norm_average, !is.na(intensity))
-norm_peaks <- SIRM.FTMS.peakCharacterization:::generate_peaks(norm_average, n_peak = Inf)
+norm_sum <- filter(norm_sum, !is.na(intensity))
+norm_peaks <- SIRM.FTMS.peakCharacterization:::generate_peaks(norm_sum, n_peak = Inf)
 ```
 
 
@@ -314,137 +314,74 @@ norm_peaks$type <- "normalized"
 all_data <- rbind(raw_peaks, norm_peaks)
 all_data$type <- forcats::fct_relevel(all_data$type, "raw", "normalized")
 
-ggplot(all_data, aes(x = log10(Height))) + geom_histogram(bins = 200, position = "identity") + facet_wrap(~ type, nrow = 2, ncol = 1) + xlim(c(-.6, 6))
+ggplot(all_data, aes(x = log10(Height))) + geom_histogram(bins = 200, position = "identity") + facet_wrap(~ type, nrow = 2, ncol = 1) + xlim(c(1, 7))
 ```
 
-OK, this is interesting. We definitely broadened the distribution. I think this
-will take a bit more investigation to figure out if the noise peaks are just in
-the very smallest bit of the distribution, or the broad one ranging from 0 to 2.
+## Peaks That Might Not Be Noise
 
+So, now, based on our conversations, assuming that **noise** is **not additive**,
+we should be able to define an upper cutoff on the normalized data based on
+the highest noise cutoff of our scans after applying the normalization.
 
-## Alternative Averaging
+### Normalize Noise and Get Max Threshold
 
-I actually think part of the problem here is that we are not averaging the
-point intensities properly. Unfortunately, due to the interpolation,
-it is a bit convoluted to do it properly, as you have to sum them once, 
-detect the peaks, and then check if a scan has all original `NA`s over that
-region of M/Z space, and then divide the values by the right number, and then
-do peak characterization on that number.
+So we need to grab the noise data, normalize the threshold, and return the maximum.
 
-```{r alternative_averaging}
-another_average <- function(scans_list, min_points = 4){
-  scans <- scans_list$scans
-  unique_mz <- scans_list$mz
-  scan_indices <- seq_along(scans)
-  
-  intensity_matrix <- matrix(nrow = length(unique_mz), ncol = length(scan_indices))
-  original_matrix <- matrix(NA, nrow = length(unique_mz), ncol = length(scan_indices))
-  
-  for (iscan in scan_indices) {
-    intensity_matrix[, iscan] <- approx(x = scans[[iscan]][, "mz"], y = scans[[iscan]][, "intensity"],
-                                        xout = unique_mz)$y
-    
-    match_mz <- unique_mz %in% scans[[iscan]][, "mz"]
-    original_matrix[match_mz, iscan] <- scans[[iscan]][, "intensity"]
+```{r normalize_noise_max_threshold}
+normalize_noise_max <- function(mspl, normalization_factors, scan_indices = NULL) {
+  if (is.null(scan_indices)) {
+    scan_indices <- seq(1, length(normalization_factors))
   }
   
-  sum_matrix <- rowSums(intensity_matrix, na.rm = TRUE)
+  mspl$scan_indices <- scan_indices
   
-  peak_locations <- pracma::findpeaks(sum_matrix, nups = floor(min_points/2),
-                                      ndowns = floor(min_points/2))
+  noise_thresholds <- mspl$get_noise_info()$threshold
   
-  n_divide <- rep(iscan, length(sum_matrix))
+  norm_thresholds <- exp(log(noise_thresholds) - normalization_factors)
   
-  n_peak <- nrow(peak_locations)
+  max(norm_thresholds)
   
-  scan_divider <- purrr::map_df(seq(1, n_peak), function(in_peak) {
-    peak_loc <- seq(peak_locations[in_peak, 3], peak_locations[in_peak, 4])
-    tmp_original <- original_matrix[peak_loc, ]
-    
-    na_sums <- colSums(is.na(tmp_original))
-    
-    data.frame(loc = peak_loc, n_divide = sum(na_sums != length(peak_loc)))
-  })
-  
-  n_divide[scan_divider$loc] <- scan_divider$n_divide
-  
-  avg_matrix <- sum_matrix / n_divide
-  
-  scan_data <- data.frame(mz = unique_mz, intensity = avg_matrix)
-  
-  scan_data$log_int <- metabolomicsUtilities::log_with_min(scan_data$intensity)
-
-  peak_locations <- pracma::findpeaks(scan_data$intensity, nups = floor(min_points/2),
-                                      ndowns = floor(min_points/2))
-  
-  if (is.infinite(n_peak)) {
-    n_peak <- nrow(peak_locations)
-  } else {
-    n_peak <- min(c(nrow(peak_locations), n_peak))
-  }
-
-  peaks <- purrr::map_df(seq(1, n_peak), function(in_peak){
-    #print(in_peak)
-    "!DEBUG Peak `in_peak`"
-    peak_loc <- seq(peak_locations[in_peak, 3], peak_locations[in_peak, 4])
-    out_peak <- get_peak_info(scan_data[peak_loc, ], peak_method = "lm_weighted", min_points = min_points)
-    out_peak$n_point <- length(peak_loc)
-    mz_width <- max(scan_data[peak_loc, "mz"]) - min(scan_data[peak_loc, "mz"])
-    out_peak$mz_width <- mz_width
-    out_peak$peak <- in_peak
-    out_peak$points <- I(list(scan_data[peak_loc, ]))
-    out_peak
-  })
-  peaks
 }
 ```
 
+### Normalize Peak Lists
 
-```{r use_another}
-raw_another <- another_average(raw_scans)
-norm_another <- another_average(norm_scans)
+We also need to normalize the peak lists.
+
+```{r normalize_peak_lists}
+normalize_peak_lists <- function(mspl, normalization_factors, scan_indices = NULL) {
+  if (is.null(scan_indices)) {
+    scan_indices <- seq(1, length(normalization_factors))
+  }
+  
+  mspl$scan_indices <- scan_indices
+  
+  peak_lists <- purrr::map(mspl$get_scan_peak_lists(), "peak_list")
+  
+  norm_lists <- purrr::map2(peak_lists, normalization_factors, function(peaks, norm_factor){
+    peaks$Height <- exp(log(peaks$Height) - norm_factor)
+    peaks
+  })
+  norm_lists
+}
 ```
 
+### Check Noise Status
 
-```{r plot_another}
-raw_another$type <- "raw"
-norm_another$type <- "normalized"
+And finally, decide if a peak is noise or not based on the new cutoff, and compare
+that to it's old status of noise or not, and get list of new peaks.
 
-all_another <- rbind(raw_another, norm_another)
-ggplot(all_another, aes(x = log10(Height))) + geom_histogram(bins = 200) + facet_wrap(~ type, nrow = 2)
+```{r check_noise_status}
+check_noise_status <- function(normalized_peaks, threshold) {
+  normalized_peaks$not_noise2 <- TRUE
+  normalized_peaks[normalized_peaks$Height <= threshold, "not_noise2"] <- FALSE
+  normalized_peaks
+}
 ```
 
-OK, that still doesn't really look *right*. It looks better, but not *right*.
+### Run Them
 
-## Try Normalizing Initial Peaks From Each Scan
+```{r run_normalized_threshold}
 
-Finally, here is something else to see if we get the same distributions we are
-seeing. Take the scan level set of peaks, and just munge them together, both
-non-normalized and normalized, and see if those distributions look like what
-we are seeing from the averaged case.
-
-```{r alternative_normalization}
-peak_lists <- purrr::map(zip_processed$peak_finder$multi_scan_peaklist$peak_list_by_scans, "peak_list")
-
-peak_lists <- peak_lists[scan_indices]
-
-raw_lists <- purrr::map_df(peak_lists, function(x){x})
-
-norm_lists <- purrr::map_df(seq(1, length(peak_lists)), function(x){
-  tmp_list <- peak_lists[[x]]
-  tmp_list$Height <- exp(log(tmp_list$Height) - normalization_factors[x])
-  tmp_list
-})
-
-
-```
-
-```{r}
-raw_lists$type <- "raw"
-norm_lists$type <- "normalized"
-
-all_lists <- rbind(raw_lists, norm_lists)
-
-ggplot(all_lists, aes(x = log10(Height))) + geom_histogram(bins = 200) + facet_wrap(~ type, nrow = 2)
 ```
 
