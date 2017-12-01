@@ -268,7 +268,7 @@ Now that we have all of our functions defined, lets compare what happens when
 we average raw and normalized data.
 
 ```{r load_processed_data}
-zip_processed <- zip_ms("test_files/zip_files_profiling_X2017.11.15.16.04.25/bcal_good_UK001N1exoposb.zip")
+zip_processed <- zip_ms("test_files/zip_rawtransformationX2017.12.01.13.00.38/bcal_good_UK001N1exoposb.zip")
 raw_data <- zip_processed$raw_ms$raw_data
 scan_range <- range(zip_processed$raw_ms$scan_range)
 
@@ -382,6 +382,14 @@ check_noise_status <- function(normalized_peaks, threshold) {
 ### Run Them
 
 ```{r run_normalized_threshold}
+mspl <- zip_processed$peak_finder$multi_scan_peaklist$clone(deep = TRUE)
+max_noise <- normalize_noise_max(mspl, normalization_factors, scan_indices)
+normed_peak_lists <- normalize_peak_lists(mspl, normalization_factors, scan_indices)
 
+noise_rechecked <- purrr::map2(normed_peak_lists, max_noise, check_noise_status)
+
+purrr::map_df(noise_rechecked, function(x){
+  data.frame(old = sum(x$not_noise), new = sum(x$not_noise2))
+})
 ```
 
