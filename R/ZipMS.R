@@ -198,6 +198,7 @@ NULL
 ZipMS <- R6::R6Class("ZipMS",
   public = list(
     zip_file = NULL,
+    zip_metadata = NULL,
     metadata = NULL,
     metadata_file = NULL,
     raw_ms = NULL,
@@ -211,6 +212,7 @@ ZipMS <- R6::R6Class("ZipMS",
     load_raw = function(){
       self$raw_ms <- RawMS$new(file.path(self$temp_directory, self$metadata$raw$raw_data),
                 file.path(self$temp_directory, self$metadata$raw$metadata))
+
     },
 
     load_peak_finder = function(){
@@ -312,6 +314,8 @@ ZipMS <- R6::R6Class("ZipMS",
         self$zip_file <- in_file
       }
 
+      get_zip_raw_metdata(self)
+
       check_zip_file(self$temp_directory)
 
       self$metadata_file <- "metadata.json"
@@ -342,8 +346,10 @@ ZipMS <- R6::R6Class("ZipMS",
         out_file <- self$out_file
       } else {
         out_file <- private$generate_filename(out_file)
+        self$out_file <- out_file
       }
       zip(out_file, list.files(self$temp_directory, full.names = TRUE), flags = "-jq")
+      write_zip_file_metadata(self)
     },
 
     cleanup = function(){
@@ -432,6 +438,62 @@ ZipMS <- R6::R6Class("ZipMS",
 
   )
 )
+
+get_zip_raw_metdata <- function(zip_obj){
+  zip_file_path <- dirname(zip_obj$zip_file)
+  zip_file <- basename_no_file_ext(zip_obj$zip_file)
+  json_file <- file.path(zip_file_path, paste0(zip_file, ".json"))
+
+  # this first case should actually happen *almost* all the time, as the instantiation
+  # of the zip container entails copying the meta-data (if present) into the raw
+  # _metadata file and putting it into the temp directory that is the proxy of
+  # our zip file
+  if (file.exists(file.path(zip_obj$temp_directory, "raw_metadata.json"))) {
+    file.path(zip_obj$temp_directory, "raw_metadata.json")
+    raw_metadata <- waitcopy::import_json(file.path(zip_obj$temp_directory, "raw_metadata.json"))
+
+    if (!is.null(raw_metadata$file)) {
+      file_metadata <- raw_metadata$file
+    } else {
+      file_metadata <- list()
+    }
+  } else if (file.exists(json_file)) {
+    json_metadata <- waitcopy::import_json(json_file)
+
+    if (!is.null(json_metadata$file)) {
+      file_metadata <- json_metadata$file
+    } else {
+      file_metadata <- list()
+    }
+  } else {
+    file_metadata <- list()
+  }
+
+  zip_obj$zip_metadata <- file_metadata
+
+  zip_obj
+
+}
+
+write_zip_file_metadata <- function(zip_obj){
+  zip_metadata <- zip_obj$zip_metadata
+
+  if (file.exists(zip_obj$out_file)) {
+    sha1 <- digest::digest(zip_obj$out_file, algo = "sha1", file = TRUE)
+
+    zip_file_metadata <- list(file = basename(zip_obj$out_file),
+                              saved_path = zip_obj$out_file,
+                              sha1 = sha1)
+
+    json_loc <- paste0(tools::file_path_sans_ext(zip_obj$out_file), ".json")
+
+    zip_metadata$zip <- zip_file_metadata
+    cat(jsonlite::toJSON(zip_metadata, pretty = TRUE, auto_unbox = TRUE), file = json_loc)
+
+  } else {
+    stop("File path does not exist, cannot write JSON metadata!")
+  }
+}
 
 #' raw peaks
 #'
