@@ -321,7 +321,11 @@ ggplot(all_data, aes(x = log10(Height))) + geom_histogram(bins = 200, position =
 
 So, now, based on our conversations, assuming that **noise** is **not additive**,
 we should be able to define an upper cutoff on the normalized data based on
-the highest noise cutoff of our scans after applying the normalization.
+the highest noise cutoff of our scans after applying the normalization. 
+
+This cutoff can be applied to the **summed** data, and then we can look for peaks
+that are underneath the peaks in the **summed** data and see if they were previously
+noise.
 
 ### Normalize Noise and Get Max Threshold
 
@@ -366,30 +370,77 @@ normalize_peak_lists <- function(mspl, normalization_factors, scan_indices = NUL
 }
 ```
 
-### Check Noise Status
+### Find Scan Peaks Underneath Summed Peaks
 
-And finally, decide if a peak is noise or not based on the new cutoff, and compare
-that to it's old status of noise or not, and get list of new peaks.
+For a set of summed peaks, this function will take the scan peaks and check
+if they are **part** of the summed peaks or not. If the summed peaks are above
+the noise cutoff, then this should find things that **might have previously**
+been noted as noise.
 
-```{r check_noise_status}
-check_noise_status <- function(normalized_peaks, threshold) {
-  normalized_peaks$not_noise2 <- TRUE
-  normalized_peaks[normalized_peaks$Height <= threshold, "not_noise2"] <- FALSE
-  normalized_peaks
+```{r find_scans_under_sums}
+scan_peaks_under_sum <- function(sum_peaks, scan_peaks){
+  sum_ranges <- purrr::map_df(seq(1, nrow(sum_peaks)), function(in_peak){
+    range_peaks <- range(sum_peaks[[in_peak, "points"]][,1])
+    data.frame(start = range_peaks[1], stop = range_peaks[2])
+  })
+  
+  convert_factor <- 10000
+  
+  sum_ranges <- as.matrix(sum_ranges)
+  
+  sum_ranges <- metabolomicsUtilities::mz_to_iranges(sum_ranges, convert_factor)
+  
+  if (!inherits(scan_peaks, "data.frame")) {
+    scan_peaks <- purrr::map(scan_peaks, function(in_peaks) {
+      peak_ranges <- metabolomicsUtilities::mz_to_iranges(in_peaks$ObservedMZ, convert_factor)
+      
+      overlaps <- IRanges::findOverlaps(sum_ranges, peak_ranges)
+      
+      in_peaks$sum_peak <- NA
+      in_peaks[S4Vectors::subjectHits(overlaps), "sum_peak"] <- sum_peaks[S4Vectors::queryHits(overlaps), "peak"]
+      in_peaks$is_under_sum <- peak_ranges %within% sum_ranges
+      in_peaks
+    })
+  } else {
+    peak_ranges <- metabolomicsUtilities::mz_to_iranges(scan_peaks$ObservedMZ, convert_factor)
+    
+    overlaps <- IRanges::findOverlaps(sum_ranges, peak_ranges)
+      
+    scan_peaks$sum_peak <- NA
+    scan_peaks[S4Vectors::subjectHits(overlaps), "sum_peak"] <- sum_peaks[S4Vectors::queryHits(overlaps), "peak"]
+    
+    scan_peaks$is_under_sum <- peak_ranges %within% sum_ranges
+  }
+  scan_peaks
 }
 ```
 
-### Run Them
+## Actually Run It
 
-```{r run_normalized_threshold}
+```{r peaks_under_sums}
 mspl <- zip_processed$peak_finder$multi_scan_peaklist$clone(deep = TRUE)
 max_noise <- normalize_noise_max(mspl, normalization_factors, scan_indices)
+
+sum_not_noise <- filter(norm_peaks, Height > (max_noise * 1.5))
 normed_peak_lists <- normalize_peak_lists(mspl, normalization_factors, scan_indices)
 
-noise_rechecked <- purrr::map2(normed_peak_lists, max_noise, check_noise_status)
+noise_rechecked <- scan_peaks_under_sum(sum_not_noise, normed_peak_lists)
+```
 
-purrr::map_df(noise_rechecked, function(x){
-  data.frame(old = sum(x$not_noise), new = sum(x$not_noise2))
+## How Many Are Affected?
+
+```{r how_many_affected}
+noise_info <- mspl$get_noise_info()
+n_affected <- purrr::map_df(seq(1, length(noise_rechecked)), function(which_check){
+  tmp_peaks <- noise_rechecked[[which_check]]
+  data.frame(scan = noise_info$scan[which_check],
+             new_peaks = sum(!tmp_peaks$not_noise & tmp_peaks$is_under_sum))
 })
+```
+
+```{r show_table, results='asis'}
+n_affected
+
+dplyr::left_join(noise_info, n_affected)
 ```
 
