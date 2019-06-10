@@ -149,17 +149,23 @@ mz_scans_to_frequency = function(mz_scan_df, ...){
 
   model_coefficients = c(median(frequency_coefficients$intercept), median(frequency_coefficients$slope))
 
+  # group them all together and remove any that were outliers based on statistics
+  # on the coefficients
   mz_frequency_df = do.call(rbind, mz_frequency)
-
   mz_frequency_df = mz_frequency_df[mz_frequency_df$scan %in% frequency_coefficients$scan, ]
 
-  mz_frequency_df$frequency = predict_frequency_sr(mz_frequency_df$mz, model_coefficients)
+  convertable_df = mz_frequency_df[mz_frequency_df$convertable, ]
+  all_model = fit_frequency_sr(convertable_df$mean_mz, convertable_df$mean_frequency)$coefficients
+
+
+  mz_frequency_df$frequency = predict_frequency_sr(mz_frequency_df$mz, all_model)
 
   rownames(mz_frequency_df) = NULL
   valid_range = discover_frequency_offset(mz_frequency_df$frequency)
   mz_frequency_df$frequency_diff = dplyr::lag(mz_frequency_df$frequency) - mz_frequency_df$frequency
   mz_frequency_df$convertable = dplyr::between(mz_frequency_df$frequency_diff, valid_range$range[1], valid_range$range[2])
-  list(frequency = mz_frequency_df, all_coefficients = frequency_coefficients, coefficients = model_coefficients, difference_range = valid_range)
+  mz_frequency_df[is.na(mz_frequency_df$convertable), "convertable"] = FALSE
+  list(frequency = mz_frequency_df, all_coefficients = frequency_coefficients, coefficients = all_model, difference_range = valid_range)
 }
 
 #' convert mz to frequency using linear fit
