@@ -757,8 +757,12 @@ split_regions <- function(signal_regions, frequency_point_regions, tiled_regions
   #   message(.y)
   #   split_region_by_peaks(.x, peak_method = peak_method, min_points = min_points)
   # })
-  split_data = internal_map$map_function(point_regions_list, split_region_by_peaks,
-                                          peak_method = peak_method, min_points = min_points)
+  split_data = purrr::imap(point_regions_list, function(in_list, in_id){
+    message(in_id)
+    split_region_by_peaks(in_list, peak_method = peak_method, min_points = min_points)
+  })
+  # split_data = internal_map$map_function(point_regions_list, split_region_by_peaks,
+  #                                         peak_method = peak_method, min_points = min_points)
 
   null_regions = purrr::map_lgl(split_data, ~ is.null(.x[[1]]$points))
   split_data = split_data[!null_regions]

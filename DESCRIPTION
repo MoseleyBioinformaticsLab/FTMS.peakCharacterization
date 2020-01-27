@@ -1,7 +1,7 @@
-Package: FTMS.peakCharacterization
+Package: FTMS.peakCharacterization.lmissues
 Title: Functionality for Detecting and Characterizing Peaks
-Version: 0.1.18
-Date: 2020-01-23
+Version: 0.1.19
+Date: 2020-01-27
 Authors@R: person(given = c("Robert", "M"), family = c("Flight"), email
         = "rflight79@gmail.com", role = c("aut", "cre"))
 Description: Provides a functions and classes for detecting,
